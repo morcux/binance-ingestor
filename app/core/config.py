@@ -17,6 +17,12 @@ class Settings(BaseSettings):
     BINANCE_WS_URL: str = "wss://stream.binance.com:9443/ws"
     SYMBOLS: list[str] = ["btcusdt", "ethusdt", "solusdt", "bnbusdt"]
 
+    TG_BOT_TOKEN: str | None = None
+    TG_CHAT_ID: str | None = None
+    ANOMALY_SIGMA_THRESHOLD: float = 1.0
+    DEPTH_PERCENT: float = 0.05
+    TG_COOLDOWN_SEC: int = 60
+
     @property
     def CLICKHOUSE_URL(self) -> str:
         return f"http://{self.CLICKHOUSE_USER}:{self.CLICKHOUSE_PASSWORD}@{self.CLICKHOUSE_HOST}:{self.CLICKHOUSE_PORT}"

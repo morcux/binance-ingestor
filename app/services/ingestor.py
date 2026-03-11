@@ -8,6 +8,7 @@ import structlog
 from app.core.config import settings
 from app.db.clickhouse import db
 from app.db.redis import redis_client
+from app.services.anomaly_detector import anomaly_detector
 
 logger = structlog.get_logger("ingestor")
 
@@ -39,8 +40,12 @@ class IngestorService:
         await redis_client.connect()
 
         flush_task = asyncio.create_task(self.flush_loop())
+        analysis_task = asyncio.create_task(anomaly_detector.run_analysis_loop())
 
-        streams = "/".join([f"{s}@bookTicker" for s in settings.SYMBOLS])
+        book_streams = [f"{s}@bookTicker" for s in settings.SYMBOLS]
+        depth_streams = [f"{s}@depth@100ms" for s in settings.SYMBOLS]
+        streams = "/".join(book_streams + depth_streams)
+
         url = f"{settings.BINANCE_WS_URL}/{streams}"
 
         while self.running:
@@ -55,7 +60,12 @@ class IngestorService:
 
                             if msg.type == aiohttp.WSMsgType.TEXT:
                                 data = json.loads(msg.data)
-                                await self.process_msg(data)
+
+                                if "e" in data and data["e"] == "depthUpdate":
+                                    await anomaly_detector.process_depth_update(data)
+                                else:
+                                    await self.process_msg(data)
+
                             elif msg.type == aiohttp.WSMsgType.ERROR:
                                 logger.error(
                                     "binance.ws.error", error=str(ws.exception())
@@ -65,6 +75,7 @@ class IngestorService:
                 logger.error("binance.ws.disconnected", error=str(e))
                 await asyncio.sleep(5)
 
+        analysis_task.cancel()
         await flush_task
 
     async def process_msg(self, data):
@@ -100,6 +111,4 @@ class IngestorService:
             await redis_client.publish(f"ticker:{symbol.lower()}", json.dumps(pub_data))
 
         except (ValueError, KeyError) as e:
-            logger.warning("msg.parse_error", error=str(e), data=data)
-
             logger.warning("msg.parse_error", error=str(e), data=data)
