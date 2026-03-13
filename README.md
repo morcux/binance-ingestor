@@ -1,119 +1,101 @@
-# Binance Ingestor (Crypto Feed High-Load)
+# Binance Market Data Ingestor & Analyzer
 
-A high-performance, asynchronous pipeline for ingesting, storing, and distributing real-time cryptocurrency market data from Binance.
+![Python Version](https://img.shields.io/badge/Python-3.12+-blue?style=flat&logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-005571?style=flat&logo=fastapi)
+![ClickHouse](https://img.shields.io/badge/ClickHouse-FFCC01?style=flat&logo=clickhouse&logoColor=black)
+![Redis](https://img.shields.io/badge/Redis-DC382D?style=flat&logo=redis&logoColor=white)
+![Docker](https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker)
 
-This project connects to the Binance WebSocket API, stores raw order book snapshots into ClickHouse, performs real-time data aggregation using ClickHouse Materialized Views, and streams both real-time data and 1-minute aggregated candles to clients via a FastAPI WebSocket server and Redis Pub/Sub.
+A high-throughput, fully asynchronous data pipeline designed to ingest, aggregate, and distribute real-time cryptocurrency market data from the Binance WebSocket API. 
 
-## 🚀 Features
+This system is built to handle high-frequency trading data, utilizing **ClickHouse** for blazing-fast OLAP storage and on-the-fly aggregations, **Redis Pub/Sub** for decoupled real-time streaming, and **FastAPI** to serve both REST and WebSocket clients. It also features an advanced **Anomaly Detection Engine** that monitors L2 Order Book imbalances using rolling statistical models.
 
-- **Real-time Ingestion**: Connects to the Binance WebSocket stream for real-time market data extraction (default symbols: `btcusdt`, `ethusdt`, `solusdt`, `bnbusdt`).
-- **High-Performance Storage**: Uses **ClickHouse** to store raw snapshots (`market_data.snapshots`) with an automated TTL (3 days).
-- **On-the-fly Aggregation**: Utilizes ClickHouse Materialized Views (`candles_1m_mv`) to aggregate raw data into 1-minute candles (`market_data.candles_1m`).
-- **Live Broadcasting**: A background broadcaster service reads the latest minute's aggregated data and publishes it via Redis Pub/Sub.
-- **Order Book & Anomaly Detection**: Maintains a synchronized local order book from real-time depth streams (`@depth@100ms`). Continuously analyzes bid/ask volume imbalances and detects sudden anomalies using rolling z-scores.
-- **Telegram Alerting**: Sends real-time warning notifications to a Telegram chat whenever volume profiles strongly deviate from historical norms.
-- **WebSocket Steaming API**: Exposes WebSocket endpoints for clients to subscribe to either raw real-time ticker data or the 1-minute aggregated candles.
-- **REST API**: Provides a REST endpoint to retrieve historical aggregated 1-minute candles.
-- **Fully Asynchronous**: Built completely asynchronously with `FastAPI`, `aiochclient`, `aiohttp`, and `redis-py`.
-- **Structured Logging**: Uses `structlog` for detailed, structured, JSON-friendly logs.
+## ✨ System Highlights
 
-## 🛠️ Tech Stack
-
-- **Framework**: [FastAPI](https://fastapi.tiangolo.com/) (Python >= 3.12)
-- **Database**: [ClickHouse](https://clickhouse.com/) (Async client `aiochclient`)
-- **Message Broker**: [Redis](https://redis.io/)
-- **Package Management**: `uv` or `pip` (`pyproject.toml`)
-- **Containerization**: Docker & Docker Compose
+*   **High-Frequency Ingestion:** Fully asynchronous WebSocket client (`aiohttp`) that buffers and batch-inserts raw L1 tick data into ClickHouse.
+*   **Zero-Latency Aggregations (OLAP):** Leverages ClickHouse `Materialized Views` and `SummingMergeTree` engines to automatically aggregate raw tick data into 1-minute OHLCV-style candles directly at the database level.
+*   **L2 Order Book Synchronization:** Maintains a real-time, synchronized local order book using Binance's `@depth@100ms` streams and REST API snapshots.
+*   **Statistical Anomaly Detection:** Calculates continuous rolling standard deviations (Z-scores) of Bid/Ask volume imbalances (within a 5% price depth). Triggers real-time Telegram alerts when market manipulation or sudden liquidity shifts occur.
+*   **Real-Time Streaming API:** Background workers broadcast completed 1-minute candles and live price ticks via Redis Pub/Sub to a FastAPI WebSocket gateway for low-latency client consumption.
+*   **Modern Python Tooling:** Built with Python 3.12, strict type hinting (`Pydantic`), structured JSON logging (`structlog`), and managed via the lightning-fast `uv` package manager.
 
 ## 🏗️ Architecture
 
-1. **Ingestor Worker**: A background worker that connects to Binance via WebSocket, fetches live order book snapshots, and inserts them directly into ClickHouse and Redis. It also listens to `@depth@100ms` streams to maintain a local synchronized order book.
-2. **Anomaly Detector**: A background task analyzing the local order book's volume profile. It looks at the volume difference between bids and asks (within 5% of price) and triggers an alert if the moving average deviates significantly.
-3. **Alerting System**: Integrates with a Telegram Bot to quickly notify stakeholders of irregular order book activities.
-4. **ClickHouse Aggregation**: ClickHouse receives the raw data and uses an inner `SummingMergeTree` and `Materialized View` to automatically aggregate the data into 1-minute candles.
-5. **Broadcaster**: A recurring async task checks ClickHouse for the past minute's completed candle and pushes a summarized event to Redis (`ticker:{symbol}_1m_candle`).
-6. **API Gateway (FastAPI)**: 
-   - HTTP clients can hit the REST endpoint to query ClickHouse for historical data.
-   - WebSocket clients can connect to stream real-time prices or 1-minute candle events powered by Redis Pub/Sub.
-
-## ⚙️ Prerequisites
-
-- **Docker** and **Docker Compose**
-- **Telegram Bot Token** (Optional: required only for anomaly alerts)
-
-## 🚦 Getting Started
-
-### 1. Configuration (Optional)
-
-If you wish to use the Anomaly Detector's Telegram notifications, pass these environment variables or create a `.env` file:
-
-```env
-TG_BOT_TOKEN="your_bot_token"
-TG_CHAT_ID="your_chat_id"
-TG_COOLDOWN_SEC=60
-ANOMALY_SIGMA_THRESHOLD=3.0
+```mermaid
+graph LR
+    B[Binance WS] -->|Raw Ticks & Depth| I[Async Ingestor]
+    I -->|Batch Insert| CH[(ClickHouse Raw\nMergeTree)]
+    I -->|Sync Depth| OB[Local Order Book]
+    
+    OB -->|Rolling Stats| AD[Anomaly Detector]
+    AD -->|Trigger Alert| TG[Telegram API]
+    
+    CH -->|Materialized View| CH_AG[(ClickHouse 1m\nSummingMergeTree)]
+    
+    CH_AG -->|Poll Last Minute| BR[Broadcaster]
+    I -->|Live Price| RD
+    BR -->|Publish 1m Candle| RD((Redis Pub/Sub))
+    
+    RD -->|Subscribe| API[FastAPI WS Gateway]
+    CH_AG -->|Query History| API
+    
+    API -->|WS/REST| C[Clients]
 ```
 
-### 2. Start the Environment using Docker Compose
+## 🚀 Getting Started
 
-The easiest way to run the entire stack (ClickHouse, Redis, API, and Ingestor) is via Docker Compose:
+### Prerequisites
+*   Docker & Docker Compose
+*   *(Optional)* Telegram Bot Token and Chat ID (for anomaly alerts)
+
+### 1. Configuration
+
+Create a `.env` file in the root directory (only required if you want Telegram alerts):
+
+```env
+TG_BOT_TOKEN="your_telegram_bot_token"
+TG_CHAT_ID="your_telegram_chat_id"
+ANOMALY_SIGMA_THRESHOLD=3.0
+DEPTH_PERCENT=0.05
+TG_COOLDOWN_SEC=60
+```
+
+### 2. Launch the Stack
+
+The entire infrastructure (ClickHouse, Redis, FastAPI Gateway, and Background Workers) is containerized. Start it with a single command:
 
 ```bash
 docker-compose up -d --build
 ```
 
-This will spin up:
-- ClickHouse on port `8123` & `9000`
-- Redis on port `6380` (mapped to `6379` internally)
-- API server on port `8000`
-- The Data Ingestor worker in the background
+*Note: The ClickHouse database schemas, TTL policies (3 days), and Materialized Views are automatically initialized on the first boot via `sql/init.sql`.*
 
-*Note: The ClickHouse instance is automatically initialized using the script at `sql/init.sql`.*
+### 3. Verify Services
 
-### 2. Verify Services
-
-Check the logs to ensure everything is running smoothly:
+Check the logs to ensure the ingestor has connected to Binance and the order book is synced:
 ```bash
-docker-compose logs -f
+docker-compose logs -f ingestor
 ```
 
 ## 📖 API Documentation
 
-Once the API is running, you can explore the interactive OpenAPI documentation at: `http://localhost:8000/docs`.
+Once running, interactive OpenAPI (Swagger) documentation is available at: `http://localhost:8000/docs`
 
-### REST Endpoints
+### REST API
 
-#### **GET** `/api/v1/history/{symbol}`
-Retrieve historical 1-minute aggregated candles for a specific symbol.
-- **Parameters:**
-  - `symbol` (str): e.g., `btcusdt`
-  - `limit` (int, optional): The number of candles to return. Default is `60`.
-- **Response**: List of `AggregatedCandle` objects containing open/close bid and ask logic, average mid-price, etc.
+*   **`GET /api/v1/history/{symbol}`**
+    *   Retrieves historical 1-minute aggregated candles directly from ClickHouse.
+    *   *Parameters:* `symbol` (e.g., `btcusdt`), `limit` (default 60).
 
-### WebSocket Endpoints
+### WebSocket API
 
-#### **WS** `/api/v1/ws/{symbol}/1m_candle`
-Subscribe to 1-minute candle summaries. These events are published once every minute for the completed previous minute.
-- **Example Client Connection**: `ws://localhost:8000/api/v1/ws/btcusdt/1m_candle`
+*   **Live Ticker Stream:** `ws://localhost:8000/api/v1/ws/{symbol}`
+    *   Streams real-time raw price updates via Redis Pub/Sub.
+*   **1-Minute Candle Stream:** `ws://localhost:8000/api/v1/ws/{symbol}/1m_candle`
+    *   Pushes a summary event exactly once per minute containing the aggregated data for the previous minute.
 
-#### **WS** `/api/v1/ws/{symbol}`
-Subscribe to real-time raw ticker events via Redis Pub/Sub.
-- **Example Client Connection**: `ws://localhost:8000/api/v1/ws/btcusdt`
+## 🧠 Core Engineering Decisions
 
-## 📁 Project Structure
-
-```text
-.
-├── app
-│   ├── api         # FastAPI routers and websocket endpoints
-│   ├── core        # CLI commands, settings, configuration mappings
-│   ├── db          # Asynchronous database clients (ClickHouse, Redis)
-│   ├── models      # Pydantic data models for snapshot and aggregation
-│   ├── services    # Background tasks (e.g. candle broadcaster)
-│   └── main.py     # FastAPI application lifecycle and startup
-├── sql
-│   └── init.sql    # ClickHouse schema initialization triggers / Materialized Views
-├── docker-compose.yml 
-├── pyproject.toml  # Project dependencies and configuration
-└── README.md
-```
+*   **Why ClickHouse?** Time-series market data requires massive insert throughput and fast analytical queries. ClickHouse's `MergeTree` handles millions of inserts/sec, and `Materialized Views` eliminate the need for a separate heavy aggregation service (like Apache Flink or Spark).
+*   **Why local Order Book?** Relying purely on REST for depth data is too slow for anomaly detection. By maintaining a local copy updated via WS deltas (`lastUpdateId` tracking), the system can calculate volume imbalances in microseconds.
+*   **Why Redis Pub/Sub?** It acts as a lightweight, lightning-fast message broker that decouples the data producers (Ingestor/Broadcaster) from the data consumers (FastAPI WebSocket clients), allowing the API to scale horizontally without bottlenecks.
